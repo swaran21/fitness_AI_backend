@@ -5,6 +5,11 @@ spring:
     mongodb:
       uri: mongodb://localhost:27017/fitnessactivity
       database: fitnessactivity
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
 
 server:
   port: 8082
@@ -20,6 +25,6 @@ rabbitmq:
   exchange:
     name: fitness.exchange
   queue:
-    activity.queue
+    name: activity.queue
   routing:
-    activity.tracking
+    key: activity.tracking
