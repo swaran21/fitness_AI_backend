@@ -32,7 +32,6 @@ public class KeyCloakUserSyncFilter implements WebFilter {
 
         if(userId!=null && token!=null){
             String finalUserId = userId;
-            String finalUserId1 = userId;
             return userService.validateUser(userId)
                     .flatMap(exist -> {
                         if(!exist){
@@ -46,7 +45,7 @@ public class KeyCloakUserSyncFilter implements WebFilter {
                             }
                         }
                         else{
-                            log.info("User {} already exist, Skipping Sync", finalUserId1);
+                            log.info("User {} already exist, Skipping Sync", finalUserId);
                             return Mono.empty();
                         }
                     })
