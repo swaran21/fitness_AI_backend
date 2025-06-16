@@ -10,8 +10,8 @@ import java.util.Optional;
 public interface UserRepository extends JpaRepository<User, String> {
 
     boolean existsByEmail(String email);
-    Optional<User> findByEmail(String email); // Change from `User` to `Optional<User>`
+    Optional<User> findByEmail(String email);
 
     boolean existsByKeycloakId(String keycloakId);
-    Optional<User> findByKeycloakId(String keycloakId); // Add this method
+    Optional<User> findByKeycloakId(String keycloakId);
 }

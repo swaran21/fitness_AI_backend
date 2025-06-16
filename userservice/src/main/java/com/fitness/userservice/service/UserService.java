@@ -1,46 +1,66 @@
-// In com.fitness.userservice.service.UserService.java
-
 package com.fitness.userservice.service;
 
 import com.fitness.userservice.dto.RegisterRequest;
 import com.fitness.userservice.dto.UserResponse;
-import com.fitness.userservice.model.User; // Assuming User entity has keycloakId field
+import com.fitness.userservice.model.User;
+import com.fitness.userservice.model.UserRole;
 import com.fitness.userservice.repository.UserRepository;
 import lombok.RequiredArgsConstructor; // For constructor injection
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional; // Import
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Optional; // Import
+import java.util.Optional;
 
 @Service
 @Slf4j
-@RequiredArgsConstructor // Use constructor injection
+@RequiredArgsConstructor
 public class UserService {
 
-    private final UserRepository userRepository; // Use final with @RequiredArgsConstructor
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
 
-    @Transactional // Good practice for methods that modify data
+    @Transactional
     public UserResponse register(RegisterRequest request) {
-        // Log the incoming request for debugging
         log.info("Register request received for email: {}, keycloakId: {}", request.getEmail(), request.getKeycloakId());
 
-        // Step 1: Check if a user already exists with this Keycloak ID.
-        // This is the most reliable way to find an already synced user.
-        if (request.getKeycloakId() != null) { // Ensure keycloakId is present in request
+        //Check if a user already exists with this Keycloak ID.
+        if (request.getKeycloakId() != null) {
             Optional<User> userByKeycloakIdOpt = userRepository.findByKeycloakId(request.getKeycloakId());
             if (userByKeycloakIdOpt.isPresent()) {
                 User existingUser = userByKeycloakIdOpt.get();
                 log.info("User found by Keycloak ID: {}. Returning existing user.", request.getKeycloakId());
                 // Optionally: Update email/firstName/lastName if they differ from Keycloak claims, if desired.
                 // For now, just return the existing user.
+                boolean changed = false;
+                if (request.getEmail() != null && !request.getEmail().equals(existingUser.getEmail())) {
+                    // Before changing email, check if the new email is already taken by ANOTHER user
+                    if (userRepository.existsByEmail(request.getEmail()) &&
+                            !userRepository.findByEmail(request.getEmail()).get().getKeycloakId().equals(request.getKeycloakId())) {
+                        log.warn("USER-SERVICE: Attempt to update email to {} for Keycloak ID {}, but this email is already used by another account.", request.getEmail(), request.getKeycloakId());
+                        // Handle this conflict: throw exception or ignore email update
+                    } else {
+                        existingUser.setEmail(request.getEmail());
+                        changed = true;
+                    }
+                }
+                if (request.getFirstName() != null && !request.getFirstName().equals(existingUser.getFirstName())) {
+                    existingUser.setFirstName(request.getFirstName());
+                    changed = true;
+                }
+                if (request.getLastName() != null && !request.getLastName().equals(existingUser.getLastName())) {
+                    existingUser.setLastName(request.getLastName());
+                    changed = true;
+                }
+                if(changed) {
+                    userRepository.save(existingUser);
+                }
                 return mapToUserResponse(existingUser);
             }
         }
 
         // Step 2: If no user found by Keycloak ID, check by email.
-        // This handles cases where the user might exist locally (e.g., pre-Keycloak)
-        // but isn't yet linked, OR it's a completely new user.
         Optional<User> userByEmailOpt = userRepository.findByEmail(request.getEmail());
         if (userByEmailOpt.isPresent()) {
             User existingUserByEmail = userByEmailOpt.get();
@@ -55,23 +75,20 @@ public class UserService {
                         request.getEmail(), request.getKeycloakId());
                 existingUserByEmail.setKeycloakId(request.getKeycloakId());
                 // Optionally update firstName/lastName if they are blank in DB but present in request
-                if (existingUserByEmail.getFirstName() == null || existingUserByEmail.getFirstName().isEmpty()) {
+                if (isEffectivelyBlank(existingUserByEmail.getFirstName()) && !isEffectivelyBlank(request.getFirstName())) {
                     existingUserByEmail.setFirstName(request.getFirstName());
                 }
-                if (existingUserByEmail.getLastName() == null || existingUserByEmail.getLastName().isEmpty()) {
+                if (isEffectivelyBlank(existingUserByEmail.getLastName()) && !isEffectivelyBlank(request.getLastName())) {
                     existingUserByEmail.setLastName(request.getLastName());
                 }
                 User updatedUser = userRepository.save(existingUserByEmail);
                 return mapToUserResponse(updatedUser);
-            } else if (!existingUserByEmail.getKeycloakId().equals(request.getKeycloakId())) {
-                // This email is ALREADY linked to a DIFFERENT Keycloak ID. This is a conflict.
-                log.warn("Conflict: Email {} is already linked to Keycloak ID {}, but current token has Keycloak ID {}.",
+            } else if (request.getKeycloakId() != null && !request.getKeycloakId().trim().isEmpty() && !existingUserByEmail.getKeycloakId().equals(request.getKeycloakId())) {
+                log.warn("USER-SERVICE: Conflict! Email [{}] is already linked to a different Keycloak ID [{}]. Requested Keycloak ID was [{}].",
                         request.getEmail(), existingUserByEmail.getKeycloakId(), request.getKeycloakId());
-                // Decide how to handle this: throw error, log and ignore, etc.
-                // For now, we'll just return the user as they are (linked to the OLD Keycloak ID).
-                // Or you might throw an exception:
-                // throw new IllegalStateException("Email " + request.getEmail() + " is already associated with a different user account.");
-                return mapToUserResponse(existingUserByEmail); // Return existing user without changing Keycloak ID
+                // This is a significant conflict. How to resolve depends on business rules.
+                // Throwing an exception might be appropriate.
+                throw new IllegalStateException("Email " + request.getEmail() + " is already associated with a different authenticated account.");
             } else {
                 // Email matches, and Keycloak ID also matches. User is already correctly synced.
                 log.info("User (email: {}) already correctly synced with Keycloak ID: {}",
@@ -85,19 +102,22 @@ public class UserService {
                 request.getEmail(), request.getKeycloakId());
         User newUser = new User();
         newUser.setEmail(request.getEmail());
-        newUser.setPassword(request.getPassword()); // Storing dummy password as is (plain text - for now)
         newUser.setKeycloakId(request.getKeycloakId());
         newUser.setFirstName(request.getFirstName());
         newUser.setLastName(request.getLastName());
+        newUser.setPassword(passwordEncoder.encode(request.getPassword()));
         // Set default role if applicable
-        // newUser.setRole(UserRole.USER);
+        newUser.setRole(UserRole.USER);
 
         User savedUser = userRepository.save(newUser);
         log.info("New user created with ID: {} and Keycloak ID: {}", savedUser.getId(), savedUser.getKeycloakId());
         return mapToUserResponse(savedUser);
     }
 
-    // Helper method to map User entity to UserResponse DTO
+    private boolean isEffectivelyBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+
     private UserResponse mapToUserResponse(User user) {
         UserResponse userResponse = new UserResponse();
         userResponse.setId(user.getId());
@@ -113,9 +133,9 @@ public class UserService {
     }
 
     @Transactional(readOnly = true)
-    public UserResponse getUserProfile(String userId) { // This userId is internal DB ID
+    public UserResponse getUserProfile(String userId) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("User not found with internal id: " + userId)); // TODO: Custom exception
+                .orElseThrow(() -> new RuntimeException("User not found with internal id: " + userId));
         return mapToUserResponse(user);
     }
 
