@@ -19,9 +19,9 @@ public class User {
     private String email;
 
     @Column(unique = true)
-    private String keycloakId;
+    private String authProviderId;
 
-    @Column(nullable=false)
+    @Column(nullable = true)
     private String password;
 
     private String firstName;

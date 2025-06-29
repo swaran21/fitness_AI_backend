@@ -5,6 +5,7 @@ import com.fitness.userservice.dto.UserResponse;
 import com.fitness.userservice.service.UserService;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -25,9 +26,13 @@ public class UserController {
         return ResponseEntity.ok(userService.register(request));
     }
 
-    @GetMapping("/{keycloakId}/validate")
-    public ResponseEntity<Boolean> validateUser(@PathVariable String keycloakId) {
-        return ResponseEntity.ok(userService.existByUserId(keycloakId));
+    @PostMapping("/{authProviderId}/ensure-exists")
+    public ResponseEntity<UserResponse> ensureUserExists(@PathVariable String authProviderId) {
+        UserResponse userResponse = userService.ensureUserExists(authProviderId);
+        // We can return 201 Created if the user was new, or 200 OK if they existed.
+        // For simplicity, returning 200 OK in both cases is also fine.
+        return ResponseEntity.status(HttpStatus.OK).body(userResponse);
     }
+
 
 }

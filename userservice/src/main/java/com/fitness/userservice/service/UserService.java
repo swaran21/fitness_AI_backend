@@ -5,7 +5,7 @@ import com.fitness.userservice.dto.UserResponse;
 import com.fitness.userservice.model.User;
 import com.fitness.userservice.model.UserRole;
 import com.fitness.userservice.repository.UserRepository;
-import lombok.RequiredArgsConstructor; // For constructor injection
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -22,24 +22,44 @@ public class UserService {
     private final PasswordEncoder passwordEncoder;
 
     @Transactional
-    public UserResponse register(RegisterRequest request) {
-        log.info("Register request received for email: {}, keycloakId: {}", request.getEmail(), request.getKeycloakId());
+    public UserResponse ensureUserExists(String authProviderId) {
+        log.info("Ensuring user exists for authProviderId: {}", authProviderId);
 
-        //Check if a user already exists with this Keycloak ID.
-        if (request.getKeycloakId() != null) {
-            Optional<User> userByKeycloakIdOpt = userRepository.findByKeycloakId(request.getKeycloakId());
-            if (userByKeycloakIdOpt.isPresent()) {
-                User existingUser = userByKeycloakIdOpt.get();
-                log.info("User found by Keycloak ID: {}. Returning existing user.", request.getKeycloakId());
-                // Optionally: Update email/firstName/lastName if they differ from Keycloak claims, if desired.
-                // For now, just return the existing user.
+        Optional<User> existingUserOpt = userRepository.findByAuthProviderId(authProviderId);
+
+        if (existingUserOpt.isPresent()) {
+            log.info("User found for authProviderId: {}. Returning existing user.", authProviderId);
+            return mapToUserResponse(existingUserOpt.get());
+        } else {
+            log.info("No user found for authProviderId: {}. Creating a new user record.", authProviderId);
+            User newUser = new User();
+            newUser.setAuthProviderId(authProviderId);
+            newUser.setRole(UserRole.USER);
+            newUser.setEmail(authProviderId + "@placeholder.auth.com");
+
+            User savedUser = userRepository.save(newUser);
+            log.info("New user provisioned with internal ID: {} for authProviderId: {}", savedUser.getId(), savedUser.getAuthProviderId());
+            return mapToUserResponse(savedUser);
+        }
+    }
+
+    @Transactional
+    public UserResponse register(RegisterRequest request) {
+        log.info("Register request received for email: {}, authProviderId: {}", request.getEmail(), request.getAuthProviderId());
+
+        if (request.getAuthProviderId() != null) {
+            Optional<User> userByAuthProviderIdOpt = userRepository.findByAuthProviderId(request.getAuthProviderId());
+            if (userByAuthProviderIdOpt.isPresent()) {
+                User existingUser = userByAuthProviderIdOpt.get();
+                log.info("User found by Auth Provider ID: {}. Returning existing user.", request.getAuthProviderId());
                 boolean changed = false;
+
                 if (request.getEmail() != null && !request.getEmail().equals(existingUser.getEmail())) {
-                    // Before changing email, check if the new email is already taken by ANOTHER user
                     if (userRepository.existsByEmail(request.getEmail()) &&
-                            !userRepository.findByEmail(request.getEmail()).get().getKeycloakId().equals(request.getKeycloakId())) {
-                        log.warn("USER-SERVICE: Attempt to update email to {} for Keycloak ID {}, but this email is already used by another account.", request.getEmail(), request.getKeycloakId());
-                        // Handle this conflict: throw exception or ignore email update
+                            !userRepository.findByEmail(request.getEmail()).get().getAuthProviderId().equals(request.getAuthProviderId())) {
+                        log.warn("USER-SERVICE: Attempt to update email to {} for authProviderId {}, but this email is already used by another account.",
+                                request.getEmail(), request.getAuthProviderId());
+                        // Handle conflict here
                     } else {
                         existingUser.setEmail(request.getEmail());
                         changed = true;
@@ -53,28 +73,24 @@ public class UserService {
                     existingUser.setLastName(request.getLastName());
                     changed = true;
                 }
-                if(changed) {
+                if (changed) {
                     userRepository.save(existingUser);
                 }
                 return mapToUserResponse(existingUser);
             }
         }
 
-        // Step 2: If no user found by Keycloak ID, check by email.
         Optional<User> userByEmailOpt = userRepository.findByEmail(request.getEmail());
         if (userByEmailOpt.isPresent()) {
             User existingUserByEmail = userByEmailOpt.get();
-            log.info("User found by email: {}. Current Keycloak ID in DB: {}",
-                    request.getEmail(), existingUserByEmail.getKeycloakId());
+            log.info("User found by email: {}. Current authProviderId in DB: {}",
+                    request.getEmail(), existingUserByEmail.getAuthProviderId());
 
-            // If the user found by email does not have a keycloakId OR
-            // if their existing keycloakId is different (and you decide to overwrite - be cautious),
-            // then update it. For now, we'll only set it if it's null.
-            if (existingUserByEmail.getKeycloakId() == null) {
-                log.info("Updating existing user (email: {}) with Keycloak ID: {}",
-                        request.getEmail(), request.getKeycloakId());
-                existingUserByEmail.setKeycloakId(request.getKeycloakId());
-                // Optionally update firstName/lastName if they are blank in DB but present in request
+            if (existingUserByEmail.getAuthProviderId() == null) {
+                log.info("Updating existing user (email: {}) with authProviderId: {}",
+                        request.getEmail(), request.getAuthProviderId());
+                existingUserByEmail.setAuthProviderId(request.getAuthProviderId());
+
                 if (isEffectivelyBlank(existingUserByEmail.getFirstName()) && !isEffectivelyBlank(request.getFirstName())) {
                     existingUserByEmail.setFirstName(request.getFirstName());
                 }
@@ -83,34 +99,30 @@ public class UserService {
                 }
                 User updatedUser = userRepository.save(existingUserByEmail);
                 return mapToUserResponse(updatedUser);
-            } else if (request.getKeycloakId() != null && !request.getKeycloakId().trim().isEmpty() && !existingUserByEmail.getKeycloakId().equals(request.getKeycloakId())) {
-                log.warn("USER-SERVICE: Conflict! Email [{}] is already linked to a different Keycloak ID [{}]. Requested Keycloak ID was [{}].",
-                        request.getEmail(), existingUserByEmail.getKeycloakId(), request.getKeycloakId());
-                // This is a significant conflict. How to resolve depends on business rules.
-                // Throwing an exception might be appropriate.
+            } else if (request.getAuthProviderId() != null && !request.getAuthProviderId().trim().isEmpty()
+                    && !existingUserByEmail.getAuthProviderId().equals(request.getAuthProviderId())) {
+                log.warn("USER-SERVICE: Conflict! Email [{}] is already linked to a different authProviderId [{}]. Requested authProviderId was [{}].",
+                        request.getEmail(), existingUserByEmail.getAuthProviderId(), request.getAuthProviderId());
                 throw new IllegalStateException("Email " + request.getEmail() + " is already associated with a different authenticated account.");
             } else {
-                // Email matches, and Keycloak ID also matches. User is already correctly synced.
-                log.info("User (email: {}) already correctly synced with Keycloak ID: {}",
-                        request.getEmail(), request.getKeycloakId());
+                log.info("User (email: {}) already correctly synced with authProviderId: {}",
+                        request.getEmail(), request.getAuthProviderId());
                 return mapToUserResponse(existingUserByEmail);
             }
         }
 
-        // Step 3: If no user by Keycloak ID and no user by email, create a new user.
-        log.info("No existing user found by Keycloak ID or email. Creating new user for email: {} with Keycloak ID: {}",
-                request.getEmail(), request.getKeycloakId());
+        log.info("No existing user found by authProviderId or email. Creating new user for email: {} with authProviderId: {}",
+                request.getEmail(), request.getAuthProviderId());
         User newUser = new User();
         newUser.setEmail(request.getEmail());
-        newUser.setKeycloakId(request.getKeycloakId());
+        newUser.setAuthProviderId(request.getAuthProviderId());
         newUser.setFirstName(request.getFirstName());
         newUser.setLastName(request.getLastName());
         newUser.setPassword(passwordEncoder.encode(request.getPassword()));
-        // Set default role if applicable
         newUser.setRole(UserRole.USER);
 
         User savedUser = userRepository.save(newUser);
-        log.info("New user created with ID: {} and Keycloak ID: {}", savedUser.getId(), savedUser.getKeycloakId());
+        log.info("New user created with ID: {} and authProviderId: {}", savedUser.getId(), savedUser.getAuthProviderId());
         return mapToUserResponse(savedUser);
     }
 
@@ -121,12 +133,10 @@ public class UserService {
     private UserResponse mapToUserResponse(User user) {
         UserResponse userResponse = new UserResponse();
         userResponse.setId(user.getId());
-        userResponse.setKeycloakId(user.getKeycloakId());
+        userResponse.setAuthProviderId(user.getAuthProviderId());
         userResponse.setEmail(user.getEmail());
-        // userResponse.setPassword(user.getPassword()); // Password should NOT be in response
         userResponse.setFirstName(user.getFirstName());
         userResponse.setLastName(user.getLastName());
-        // userResponse.setRole(user.getRole()); // If you have roles
         userResponse.setCreated(user.getCreated());
         userResponse.setModified(user.getModified());
         return userResponse;
@@ -139,10 +149,9 @@ public class UserService {
         return mapToUserResponse(user);
     }
 
-    // This method is called with Keycloak ID from the gateway
     @Transactional(readOnly = true)
-    public Boolean existByUserId(String keycloakId) {
-        log.info("UserService (USER-SERVICE): Checking existence by Keycloak ID: {}", keycloakId);
-        return userRepository.existsByKeycloakId(keycloakId);
+    public Boolean existByUserId(String authProviderId) {
+        log.info("UserService (USER-SERVICE): Checking existence by authProviderId: {}", authProviderId);
+        return userRepository.existsByAuthProviderId(authProviderId);
     }
 }

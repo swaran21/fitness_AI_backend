@@ -3,9 +3,9 @@ server:
 
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/fitness_user_db
-    username: postgres
-    password: aizen
+    url: jdbc:postgresql://ep-tight-frost-a881q2wm-pooler.eastus2.azure.neon.tech/fitnessai?sslmode=require
+    username: fitnessai_owner
+    password: npg_2zj8YdfZtygx
   jpa:
     hibernate:
       ddl-auto: update
